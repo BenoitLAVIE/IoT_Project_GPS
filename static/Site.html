@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Jussieu IoT</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background: #f0f0f0; }
+        h1 { color: #333; } /* Titre principal */
+        
+        /* Conteneur principal il contient l'image, le canvas (lignes) et le marqueur (point) */
+        #map-container {
+            position: relative; /* Pour positionner les éléments superposés */
+            display: inline-block; /* Pour centrer le conteneur */
+            border: 2px solid #333;
+            box-shadow: 0 0 20px rgba(0,0,0,0.2);
+            width: 800px; /* Largeur fixe pour simplifier le canvas */
+            height: auto;
+        }
+
+        /*L'image de fond*/
+        #map-image {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
+        /*Le Canvas (Dessin du trajet)*/
+        #path-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Permet de cliquer à travers si besoin */
+            z-index: 5; /* Au dessus de l'image */
+        }
+
+        /*Le Marqueur (Point actuel)*/
+        #marker {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            background-color: red;
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%); /*Centrage*/
+            box-shadow: 0 0 15px rgba(255, 0, 0, 0.8); /*Effet brillant*/
+            transition: all 0.5s ease-in-out; 
+            display: none; 
+            z-index: 10; /* Au dessus du canvas */
+        }
+
+        #marker::after {/*Label du marqueur*/
+            content: attr(data-label); /*Récupère l'attribut data-label*/
+            position: absolute; /*Positionné au dessus du marqueur*/
+            top: -30px;
+            left: 50%;
+            transform: translateX(-50%);/*Centrage horizontal*/
+            background:rgba(0,0,0,0.8);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 14px;
+            white-space: nowrap;
+            font-weight: bold;
+        }
+
+        #status { margin-top: 20px; font-size: 1.2em; font-weight: bold; color: #555; } /*statut permet d'afficher les infos*/
+        
+        .info-box {
+            background: white; padding: 10px; margin: 10px auto; 
+            width: 80%; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Localisation WiFi Campus Jussieu</h1>
+
+    <div id="map-container">
+        <img id="map-image" src="/static/Jussieu.jpg" alt="Plan Jussieu"> <!-- Image de fond -->
+        
+        <canvas id="path-canvas" width="800" height="800"></canvas> 
+        
+        <div id="marker" data-label="?"></div> <!-- Marqueur de position actuelle -->
+    </div>
+
+    <div id="status">Initialisation</div>  <!-- Statut des données -->
+
+    <script>
+        const API_POS_URL = "http://127.0.0.1:8000/current_position"; 
+        const API_PATH_URL = "http://127.0.0.1:8000/current_path";
+
+        const marker = document.getElementById('marker'); // Marqueur de position
+        const statusDiv = document.getElementById('status'); // Div de statut
+        const canvas = document.getElementById('path-canvas'); 
+        const ctx = canvas.getContext('2d'); // Contexte de dessin
+        const img = document.getElementById('map-image'); // Image de fond
+
+        const locations = { //Coordonnées des lieux en pourcentage
+            "Esclangon": { top: 82, left: 85 },
+            "T66": { top: 82, left: 72 },   
+            "T56": { top: 82, left: 62 },
+            "T46": { top: 82, left: 50 },
+            "T26": { top: 82, left: 28 },
+            "T16": { top: 82, left: 15 },
+            
+            "T65": { top: 68, left: 72 },
+            "T55": { top: 68, left: 62 },
+            "T45": { top: 68, left: 50 },
+            "T25": { top: 68, left: 28 },
+            "T15": { top: 68, left: 15 },
+
+            "T54": { top: 55, left: 62 }, 
+            "T44": { top: 55, left: 50 }, 
+            "T34": { top: 55, left: 40 }, 
+            "T24": { top: 55, left: 28 },
+            "T14": { top: 55, left: 15 }, 
+            
+            "T53": { top: 42, left: 62 },
+            "T43": { top: 42, left: 50 },
+            "T33": { top: 42, left: 40 },
+            "T23": { top: 42, left: 28 },
+            "T13": { top: 42, left: 15 },
+
+            "T42": { top: 30, left: 50 },
+            "T32": { top: 30, left: 40 },
+            "T22": { top: 30, left: 28 },
+            "T12": { top: 30, left: 15 },
+        };
+
+        //Redimensionner le canvas quand l'image est chargée
+        img.onload = function() {
+            canvas.width = img.clientWidth;
+            canvas.height = img.clientHeight;
+        };
+
+        async function update() { //Récupération des données et mise à jour de l'affichage
+            try {
+                //pos actuel
+                const posResponse = await fetch(API_POS_URL);
+                const posData = await posResponse.json();
+                updateMarker(posData.location);
+
+                //trajet (Path)
+                const pathResponse = await fetch(API_PATH_URL);
+                const pathData = await pathResponse.json();
+                drawPath(pathData.path);
+
+                //Mise à jour du texte de statut
+                let statusText = "";
+                if (posData.location && posData.location !== "Inconnu") {
+                    statusText += "Live : " + posData.location;
+                }
+                if (pathData.path && pathData.path.length > 0) {
+                    statusText += "Trajet : " + pathData.path.length + " points";
+                }
+                statusDiv.innerText = statusText || "En attente de données...";
+
+            } catch (error) {
+                console.error("Erreur API:", error);
+                statusDiv.innerText = "Erreur de connexion au serveur Python.";
+            }
+        }
+
+        function updateMarker(locationName) { //Met à jour la position du marqueur
+            if (locations[locationName]) { //Vérifie si le lieu est connu
+                const coords = locations[locationName]; //Récupère les coordonnées
+                marker.style.top = coords.top + "%";
+                marker.style.left = coords.left + "%";
+                marker.style.display = "block"; 
+                marker.setAttribute("data-label", locationName); //Met à jour le label
+            } else {
+                marker.style.display = "none";
+            }
+        }
+
+        function drawPath(pathPoints) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);//Efface le canvas
+
+            if (!pathPoints || pathPoints.length < 2) return;//Besoin d'au moins 2 points
+
+            ctx.beginPath();//Commence un nouveau chemin
+            ctx.lineWidth = 4;//
+            ctx.strokeStyle = 'blue';
+            ctx.lineCap = 'round';//Bouts arrondis
+            ctx.lineJoin = 'round';
+            
+            ctx.globalAlpha = 0.6; //Transparence
+
+            let firstPoint = true; //Indicateur du premier point
+
+            pathPoints.forEach(locName => { //Parcours des points du trajet
+                if (locations[locName]) {
+                    const x = (locations[locName].left / 100) * canvas.width; //Convertit en pixels
+                    const y = (locations[locName].top / 100) * canvas.height;
+
+                    if (firstPoint) { //Premier point
+                        ctx.moveTo(x, y);
+                        firstPoint = false;
+                    } else { //Points suivants
+                        ctx.lineTo(x, y);
+                    }
+                }
+            });
+
+            ctx.stroke(); //Dessine le chemin
+            ctx.globalAlpha = 1.0;  //Réinitialise l'opacité
+        }
+
+        setInterval(update, 2000); //Met à jour toutes les 2 secondes
+        update(); //Appel initial
+    </script>
+
+</body>
+</html>
